@@ -19,6 +19,8 @@ import {
 	TEST_MP4
 } from "@self/tootils/render";
 import { run_shared_prop_tests } from "@self/tootils/shared-prop-tests";
+import event from "@testing-library/user-event";
+import { format_time } from "@gradio/utils";
 import { setupi18n } from "../core/src/i18n";
 
 vi.mock("@ffmpeg/ffmpeg", () => ({
@@ -375,6 +377,20 @@ describe("Player controls", () => {
 	setupi18n();
 	afterEach(() => cleanup());
 
+	async function render_loaded_video(interactive = true) {
+		const result = await render(Video, {
+			...default_props,
+			interactive,
+			value: TEST_MP4
+		});
+		const player = result.getByTestId("Video-player") as HTMLVideoElement;
+		await waitFor(() => expect(player.duration).toBeGreaterThan(0));
+		const seek = result.getByRole("slider", {
+			name: "Video seek position"
+		}) as HTMLInputElement;
+		return { ...result, player, seek };
+	}
+
 	test("play/pause button is rendered when video has a value", async () => {
 		const { getByLabelText } = await render(Video, {
 			...default_props,
@@ -382,7 +398,7 @@ describe("Player controls", () => {
 			value: fake_value
 		});
 
-		expect(getByLabelText("play-pause-replay-button")).toBeTruthy();
+		expect(getByLabelText("play-pause-replay-button")).toBeInTheDocument();
 	});
 
 	test("volume button is rendered", async () => {
@@ -392,7 +408,7 @@ describe("Player controls", () => {
 			value: fake_value
 		});
 
-		expect(getByLabelText("Adjust volume")).toBeTruthy();
+		expect(getByLabelText("Adjust volume")).toBeInTheDocument();
 	});
 
 	test("fullscreen button is rendered", async () => {
@@ -402,7 +418,7 @@ describe("Player controls", () => {
 			value: fake_value
 		});
 
-		expect(getByLabelText("full-screen")).toBeTruthy();
+		expect(getByLabelText("full-screen")).toBeInTheDocument();
 	});
 
 	test("trim button is rendered in interactive mode", async () => {
@@ -412,7 +428,7 @@ describe("Player controls", () => {
 			value: fake_value
 		});
 
-		expect(getByLabelText("Trim video to selection")).toBeTruthy();
+		expect(getByLabelText("Trim video to selection")).toBeInTheDocument();
 	});
 
 	test("trim button is not rendered in static mode", async () => {
@@ -434,8 +450,8 @@ describe("Player controls", () => {
 
 		await fireEvent.click(getByLabelText("Trim video to selection"));
 
-		expect(getByText("Trim")).toBeTruthy();
-		expect(getByText("Cancel")).toBeTruthy();
+		expect(getByText("Trim")).toBeInTheDocument();
+		expect(getByText("Cancel")).toBeInTheDocument();
 	});
 
 	test("clicking Cancel exits edit mode and restores trim button", async () => {
@@ -446,24 +462,155 @@ describe("Player controls", () => {
 		});
 
 		await fireEvent.click(getByLabelText("Trim video to selection"));
-		expect(getByText("Cancel")).toBeTruthy();
+		expect(getByText("Cancel")).toBeInTheDocument();
 
 		await fireEvent.click(getByText("Cancel"));
 
 		expect(queryByText("Cancel")).toBeNull();
-		expect(getByLabelText("Trim video to selection")).toBeTruthy();
+		expect(getByLabelText("Trim video to selection")).toBeInTheDocument();
 	});
 
 	test("time display is rendered", async () => {
-		const { container } = await render(Video, {
+		const { getByText } = await render(Video, {
 			...default_props,
 			interactive: true,
 			value: fake_value
 		});
 
-		const timeDisplay = container.querySelector(".time");
-		expect(timeDisplay).toBeTruthy();
+		expect(getByText("0:00 / 0:00")).toBeInTheDocument();
 	});
+
+	test("seek timeline exposes adjustable semantics and formatted time", async () => {
+		const { player, seek } = await render_loaded_video();
+
+		expect(seek).toBeEnabled();
+		expect(seek.min).toBe("0");
+		expect(Number(seek.max)).toBeCloseTo(player.duration, 2);
+		expect(Number(seek.value)).toBe(0);
+		expect(seek).toHaveAccessibleName("Video seek position");
+		expect(seek).toHaveAttribute(
+			"aria-valuetext",
+			`0:00 / ${format_time(player.duration)}`
+		);
+	});
+
+	test("seek timeline is available in static mode", async () => {
+		const { seek } = await render_loaded_video(false);
+
+		expect(seek).toBeEnabled();
+	});
+
+	test("seek timeline stays finite and disabled before metadata is available", async () => {
+		const { getByRole } = await render(Video, {
+			...default_props,
+			interactive: true,
+			value: fake_value
+		});
+		const seek = getByRole("slider", {
+			name: "Video seek position"
+		}) as HTMLInputElement;
+
+		expect(seek).toBeDisabled();
+		expect(seek.min).toBe("0");
+		expect(seek.max).toBe("0");
+		expect(seek.value).toBe("0");
+		expect(seek).toHaveAttribute("aria-valuetext", "0:00 / 0:00");
+	});
+
+	test("arrow, Home, and End keys seek within video boundaries", async () => {
+		const { player, seek } = await render_loaded_video();
+		seek.focus();
+
+		await event.keyboard("{ArrowRight}");
+		expect(player.currentTime).toBeCloseTo(0.1, 1);
+
+		await event.keyboard("{ArrowLeft}");
+		expect(player.currentTime).toBe(0);
+
+		await event.keyboard("{End}");
+		expect(player.currentTime).toBeCloseTo(player.duration, 2);
+
+		await event.keyboard("{ArrowRight}");
+		expect(player.currentTime).toBeLessThanOrEqual(player.duration);
+
+		await event.keyboard("{Home}");
+		expect(player.currentTime).toBe(0);
+
+		await event.keyboard("{ArrowLeft}");
+		expect(player.currentTime).toBeGreaterThanOrEqual(0);
+	});
+
+	test("input interaction seeks the underlying video", async () => {
+		const { player, seek } = await render_loaded_video();
+		const halfway = player.duration / 2;
+
+		await fireEvent.input(seek, { target: { value: String(halfway) } });
+
+		expect(player.currentTime).toBeCloseTo(halfway, 2);
+		expect(Number(seek.value)).toBeCloseTo(halfway, 2);
+		expect(seek).toHaveAttribute(
+			"aria-valuetext",
+			`${format_time(halfway)} / ${format_time(player.duration)}`
+		);
+	});
+
+	test("media playback and backend playback_position stay synchronized", async () => {
+		const { player, seek, get_data, set_data } = await render_loaded_video();
+		const quarter = player.duration / 4;
+		const halfway = player.duration / 2;
+
+		player.currentTime = quarter;
+		await fireEvent.timeUpdate(player);
+
+		await waitFor(() => expect(Number(seek.value)).toBeCloseTo(quarter, 2));
+		expect((await get_data()).playback_position).toBeCloseTo(quarter, 2);
+
+		await set_data({ playback_position: halfway });
+
+		await waitFor(() => expect(player.currentTime).toBeCloseTo(halfway, 2));
+		expect(Number(seek.value)).toBeCloseTo(halfway, 2);
+	});
+
+	test("backend playback_position clamps boundaries and ignores non-finite values", async () => {
+		const { player, seek, set_data, get_data } = await render_loaded_video();
+
+		await set_data({ playback_position: -10 });
+		await waitFor(() => expect(player.currentTime).toBe(0));
+		expect(Number(seek.value)).toBe(0);
+
+		await set_data({ playback_position: player.duration + 10 });
+		await waitFor(() =>
+			expect(player.currentTime).toBeCloseTo(player.duration, 2)
+		);
+		expect(Number(seek.value)).toBeCloseTo(player.duration, 2);
+
+		const last_valid_position = player.currentTime;
+		await set_data({ playback_position: Number.NaN });
+
+		expect(player.currentTime).toBe(last_valid_position);
+		expect(Number(seek.value)).toBeCloseTo(last_valid_position, 2);
+		expect((await get_data()).playback_position).toBe(last_valid_position);
+	});
+
+	test("keyboard focus reveals the player controls", async () => {
+		const { getByRole } = await render(Video, {
+			...default_props,
+			interactive: true,
+			value: fake_value
+		});
+		const play_button = getByRole("button", {
+			name: "play-pause-replay-button"
+		});
+
+		play_button.focus();
+
+		expect(play_button).toHaveFocus();
+		await waitFor(() => expect(play_button).toBeVisible());
+	});
+
+	test.todo(
+		"VISUAL: keyboard focus on the Video seek timeline displays a distinct outline and thumb — needs Playwright visual regression screenshot comparison"
+	);
 });
 
 const upload_props = {

@@ -77,24 +77,67 @@
 	let current_volume = $state(1);
 	let is_fullscreen = $state(false);
 
-	function handleMove(e: TouchEvent | MouseEvent): void {
-		if (!duration) return;
+	let has_valid_duration = $derived(Number.isFinite(duration) && duration > 0);
+	let seek_time = $derived(
+		has_valid_duration && Number.isFinite(time)
+			? Math.min(Math.max(time, 0), duration)
+			: 0
+	);
+	let seek_progress = $derived(
+		has_valid_duration ? (seek_time / duration) * 100 : 0
+	);
 
-		if (e.type === "click") {
-			handle_click(e as MouseEvent);
-			return;
+	const SEEK_STEP = 0.1;
+
+	function normalize_time(value: number): number | undefined {
+		if (!Number.isFinite(value)) return undefined;
+		const nonnegative_time = Math.max(value, 0);
+		return has_valid_duration
+			? Math.min(nonnegative_time, duration)
+			: nonnegative_time;
+	}
+
+	function set_seek_position(value: number): void {
+		if (!video || !has_valid_duration) return;
+		const normalized_time = normalize_time(value);
+		if (normalized_time === undefined) return;
+		video.currentTime = normalized_time;
+		time = normalized_time;
+	}
+
+	function handle_seek(event: Event): void {
+		set_seek_position(Number((event.currentTarget as HTMLInputElement).value));
+	}
+
+	function handle_seek_keydown(event: KeyboardEvent): void {
+		if (!has_valid_duration) return;
+		let requested_time: number;
+		switch (event.key) {
+			case "ArrowLeft":
+			case "ArrowDown":
+				requested_time = seek_time - SEEK_STEP;
+				break;
+			case "ArrowRight":
+			case "ArrowUp":
+				requested_time = seek_time + SEEK_STEP;
+				break;
+			case "Home":
+				requested_time = 0;
+				break;
+			case "End":
+				requested_time = duration;
+				break;
+			case "PageDown":
+				requested_time = seek_time - Math.max(duration / 10, SEEK_STEP);
+				break;
+			case "PageUp":
+				requested_time = seek_time + Math.max(duration / 10, SEEK_STEP);
+				break;
+			default:
+				return;
 		}
-
-		if (e.type !== "touchmove" && !((e as MouseEvent).buttons & 1)) return;
-
-		const clientX =
-			e.type === "touchmove"
-				? (e as TouchEvent).touches[0].clientX
-				: (e as MouseEvent).clientX;
-		const { left, right } = (
-			e.currentTarget as HTMLProgressElement
-		).getBoundingClientRect();
-		time = (duration * (clientX - left)) / (right - left);
+		event.preventDefault();
+		set_seek_position(requested_time);
 	}
 
 	async function play_pause(): Promise<void> {
@@ -110,14 +153,6 @@
 				await video.play();
 			} else video.pause();
 		}
-	}
-
-	function handle_click(e: MouseEvent): void {
-		if (!duration) return;
-		const { left, right } = (
-			e.currentTarget as HTMLProgressElement
-		).getBoundingClientRect();
-		time = (duration * (e.clientX - left)) / (right - left);
 	}
 
 	function handle_end(): void {
@@ -192,10 +227,24 @@
 		if (
 			playback_position !== time &&
 			video &&
-			typeof playback_position === "number" &&
-			Number.isFinite(playback_position)
+			typeof playback_position === "number"
 		) {
-			video.currentTime = playback_position;
+			const normalized_time = normalize_time(playback_position);
+			if (normalized_time === undefined) {
+				playback_position = time;
+				return;
+			}
+			video.currentTime = normalized_time;
+			time = normalized_time;
+		}
+	});
+
+	$effect(() => {
+		if (!video || !has_valid_duration) return;
+		const normalized_time = normalize_time(time);
+		if (normalized_time !== undefined && normalized_time !== time) {
+			video.currentTime = normalized_time;
+			time = normalized_time;
 		}
 	});
 
@@ -263,24 +312,28 @@
 				{/if}
 			</span>
 
-			<span class="time">{format_time(time)} / {format_time(duration)}</span>
+			<span class="time">
+				{format_time(seek_time)} / {format_time(
+					has_valid_duration ? duration : 0
+				)}
+			</span>
 
-			<!-- TODO: implement accessible video timeline for 4.0 -->
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-			<progress
-				value={time / duration || 0}
-				onmousemove={handleMove}
-				ontouchmove={(e) => {
-					e.preventDefault();
-					handleMove(e);
-				}}
-				onclick={(e) => {
-					e.stopPropagation();
-					e.preventDefault();
-					handle_click(e);
-				}}
-			></progress>
+			<input
+				class="seek"
+				type="range"
+				min="0"
+				max={has_valid_duration ? duration : 0}
+				step="any"
+				value={seek_time}
+				disabled={!has_valid_duration}
+				aria-label="Video seek position"
+				aria-valuetext={`${format_time(seek_time)} / ${format_time(
+					has_valid_duration ? duration : 0
+				)}`}
+				style={`--seek-progress: ${seek_progress}%`}
+				oninput={handle_seek}
+				onkeydown={handle_seek_keydown}
+			/>
 
 			<div class="volume-control-wrapper">
 				<button
@@ -332,21 +385,64 @@
 		text-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
 	}
 
-	progress {
+	.seek {
+		appearance: none;
 		margin-right: var(--size-3);
+		border: none;
 		border-radius: var(--radius-sm);
+		background: linear-gradient(
+			to right,
+			rgba(255, 255, 255, 0.9) 0%,
+			rgba(255, 255, 255, 0.9) var(--seek-progress),
+			rgba(255, 255, 255, 0.2) var(--seek-progress),
+			rgba(255, 255, 255, 0.2) 100%
+		);
+		cursor: pointer;
+		padding: 0;
 		width: var(--size-full);
 		height: var(--size-2);
 	}
 
-	progress::-webkit-progress-bar {
-		border-radius: 2px;
-		background-color: rgba(255, 255, 255, 0.2);
-		overflow: hidden;
+	.seek:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
+		box-shadow: 0 0 0 1px white;
 	}
 
-	progress::-webkit-progress-value {
-		background-color: rgba(255, 255, 255, 0.9);
+	.seek:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.seek::-webkit-slider-runnable-track {
+		border-radius: var(--radius-sm);
+		background: transparent;
+		height: var(--size-2);
+	}
+
+	.seek::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		margin-top: calc((var(--size-2) - var(--size-3)) / 2);
+		border: 1px solid var(--color-grey-800);
+		border-radius: 50%;
+		background: white;
+		width: var(--size-3);
+		height: var(--size-3);
+	}
+
+	.seek::-moz-range-track {
+		border-radius: var(--radius-sm);
+		background: transparent;
+		height: var(--size-2);
+	}
+
+	.seek::-moz-range-thumb {
+		border: 1px solid var(--color-grey-800);
+		border-radius: 50%;
+		background: white;
+		width: var(--size-3);
+		height: var(--size-3);
 	}
 
 	.mirror {
@@ -372,7 +468,8 @@
 		width: calc(100% - var(--size-2) * 2);
 		z-index: 10;
 	}
-	.wrap:hover .controls {
+	.wrap:hover .controls,
+	.wrap:focus-within .controls {
 		opacity: 1;
 	}
 	:global(:fullscreen) .controls {
