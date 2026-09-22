@@ -592,20 +592,95 @@ describe("Player controls", () => {
 		expect((await get_data()).playback_position).toBe(last_valid_position);
 	});
 
-	test("keyboard focus reveals the player controls", async () => {
-		const { getByRole } = await render(Video, {
-			...default_props,
-			interactive: true,
-			value: fake_value
+	test("vertical arrow keys seek backward and forward", async () => {
+		const { player, seek } = await render_loaded_video();
+		seek.focus();
+
+		await event.keyboard("{ArrowUp}");
+		expect(player.currentTime).toBeCloseTo(0.1, 1);
+
+		await event.keyboard("{ArrowDown}");
+		expect(player.currentTime).toBe(0);
+	});
+
+	test("page keys seek by a larger amount than arrow keys", async () => {
+		const { player, seek } = await render_loaded_video();
+		const page_step = player.duration / 10;
+		seek.focus();
+
+		await event.keyboard("{PageUp}");
+		expect(player.currentTime).toBeCloseTo(page_step, 1);
+		expect(player.currentTime).toBeGreaterThan(0.1);
+
+		await event.keyboard("{PageDown}");
+		expect(player.currentTime).toBe(0);
+	});
+
+	test.todo(
+		"POINTER: dragging and clicking the seek timeline with a real mouse and with touch moves playback — needs a Playwright spec in js/spa/test, since the control bar is hover-revealed and synthetic events cannot drive a native range"
+	);
+
+	test("reaching the end and looping back keeps the timeline in sync", async () => {
+		const { player, seek } = await render_loaded_video();
+
+		player.currentTime = player.duration;
+		await fireEvent.timeUpdate(player);
+
+		await waitFor(() =>
+			expect(Number(seek.value)).toBeCloseTo(player.duration, 2)
+		);
+		expect(seek).toHaveAttribute(
+			"aria-valuetext",
+			`${format_time(player.duration)} / ${format_time(player.duration)}`
+		);
+
+		await fireEvent.ended(player);
+		player.currentTime = 0;
+		await fireEvent.timeUpdate(player);
+
+		await waitFor(() => expect(Number(seek.value)).toBe(0));
+		expect(seek).toHaveAttribute(
+			"aria-valuetext",
+			`0:00 / ${format_time(player.duration)}`
+		);
+	});
+
+	test("losing a valid duration disables seeking without exposing invalid values", async () => {
+		const { getByRole, set_data } = await render_loaded_video();
+
+		await set_data({ value: fake_value });
+
+		await waitFor(() => {
+			const seek = getByRole("slider", {
+				name: "Video seek position"
+			}) as HTMLInputElement;
+			expect(seek).toBeDisabled();
+			expect(seek.max).toBe("0");
+			expect(seek.value).toBe("0");
+			expect(seek).toHaveAttribute("aria-valuetext", "0:00 / 0:00");
 		});
+	});
+
+	test("controls are hidden until focus enters them and hide again on exit", async () => {
+		const { getByRole, seek } = await render_loaded_video();
 		const play_button = getByRole("button", {
 			name: "play-pause-replay-button"
 		});
 
+		expect(play_button).not.toBeVisible();
+
+		seek.focus();
+
+		expect(seek).toHaveFocus();
+		await waitFor(() => expect(play_button).toBeVisible());
+
 		play_button.focus();
 
-		expect(play_button).toHaveFocus();
-		await waitFor(() => expect(play_button).toBeVisible());
+		await waitFor(() => expect(seek).toBeVisible());
+
+		play_button.blur();
+
+		await waitFor(() => expect(play_button).not.toBeVisible());
 	});
 
 	test.todo(
